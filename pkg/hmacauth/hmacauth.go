@@ -4,35 +4,23 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/hmac"
-	"encoding/base64"
 	"errors"
+	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/go-logr/zapr"
+	"github.com/jlewi/hydros/pkg/util"
+	"go.uber.org/zap"
 )
 
-// HmacAuth signs outbound requests and authenticates inbound requests.
-type HmacAuth interface {
-	// Produces the string that will be prefixed to the request body and
-	// used to generate the signature.
-	StringToSign(req *http.Request) string
-
-	// Adds a signature header to the request.
-	SignRequest(req *http.Request)
-
-	// Generates a signature for the request.
-	RequestSignature(req *http.Request) string
-
-	// Retrieves the signature included in the request header.
-	SignatureFromHeader(req *http.Request) string
-
-	// Authenticates the request, returning the result code, the signature
-	// from the header, and the locally-computed signature.
-	AuthenticateRequest(request *http.Request) (
-		result AuthenticationResult,
-		headerSignature, computedSignature string)
-}
+const (
+	// SigSeparator is the separator character in the signature that separates the algorithm from the signature.
+	SigSeparator = "="
+)
 
 var supportedAlgorithms = map[string]crypto.Hash{
 	"md4":       crypto.MD4,
@@ -85,17 +73,18 @@ func CryptoHashToDigestName(id crypto.Hash) (result string, err error) {
 	return
 }
 
-type hmacAuth struct {
-	hash    crypto.Hash
-	key     []byte
-	header  string
-	headers []string
+// HmacAuth signs outbound requests and authenticates inbound requests.
+type HmacAuth struct {
+	hash     crypto.Hash
+	key      []byte
+	header   string
+	headers  []string
+	bodyOnly bool
 }
 
 // NewHmacAuth returns an HmacAuth object that can be used to sign or
 // authenticate HTTP requests based on the supplied parameters.
-func NewHmacAuth(hash crypto.Hash, key []byte, header string,
-	headers []string) HmacAuth {
+func NewHmacAuth(hash crypto.Hash, key []byte, header string, headers []string, bodyOnly bool) *HmacAuth {
 	if hash.Available() == false {
 		var name string
 		var supported bool
@@ -108,10 +97,12 @@ func NewHmacAuth(hash crypto.Hash, key []byte, header string,
 	for i, h := range headers {
 		canonicalHeaders[i] = http.CanonicalHeaderKey(h)
 	}
-	return &hmacAuth{hash, key, header, canonicalHeaders}
+	return &HmacAuth{hash, key, header, canonicalHeaders, bodyOnly}
 }
 
-func (auth *hmacAuth) StringToSign(req *http.Request) string {
+// StringToSign Produces the string that will be prefixed to the request body and
+// used to generate the signature.
+func (auth *HmacAuth) StringToSign(req *http.Request) string {
 	var buffer bytes.Buffer
 	_, _ = buffer.WriteString(req.Method)
 	_, _ = buffer.WriteString("\n")
@@ -140,32 +131,45 @@ func (auth *hmacAuth) StringToSign(req *http.Request) string {
 	return buffer.String()
 }
 
-func (auth *hmacAuth) SignRequest(req *http.Request) {
-	req.Header.Set(auth.header, auth.RequestSignature(req))
-}
-
-func (auth *hmacAuth) RequestSignature(req *http.Request) string {
+// RequestSignature Generates a signature for the request.
+func (auth *HmacAuth) RequestSignature(req *http.Request) string {
 	return requestSignature(auth, req, auth.hash)
 }
 
-func requestSignature(auth *hmacAuth, req *http.Request,
+func requestSignature(auth *HmacAuth, req *http.Request,
 	hashAlgorithm crypto.Hash) string {
+	log := zapr.NewLogger(zap.L()).WithValues("UserAgent", req.UserAgent())
+	log.Info("Creating hmac", "algorithm", hashAlgorithm.String())
 	h := hmac.New(hashAlgorithm.New, auth.key)
-	_, _ = h.Write([]byte(auth.StringToSign(req)))
 
-	if req.Body != nil {
-		reqBody, _ := ioutil.ReadAll(req.Body)
-		req.Body = ioutil.NopCloser(bytes.NewBuffer(reqBody))
-		_, _ = h.Write(reqBody)
+	if !auth.bodyOnly {
+		data := []byte(auth.StringToSign(req))
+		log.V(util.Debug).Info("Writing header string", "data", string(data))
+		_, err := h.Write(data)
+		if err != nil {
+			log.Error(err, "Problem writing the header string")
+		}
 	}
 
-	var sig []byte
-	sig = h.Sum(sig)
-	return algorithmName[hashAlgorithm] + " " +
-		base64.StdEncoding.EncodeToString(sig)
+	if req.Body != nil {
+		reqBody, _ := io.ReadAll(req.Body)
+		log.V(util.Debug).Info("Computing body hmac", "length", len(reqBody), "body", string(reqBody))
+		req.Body = ioutil.NopCloser(bytes.NewBuffer(reqBody))
+		b, err := h.Write(reqBody)
+		if err != nil {
+			log.Error(err, "Failed to write bytes to hmac")
+		}
+		log.V(util.Debug).Info("Wrote bytes to hmac", "length", b)
+	}
+
+	sig := h.Sum(nil)
+	log.V(util.Debug).Info("Computed", "size", h.Size(), "sig", fmt.Sprintf("%x", sig))
+	// GitHub encodes the signature as hexadecimal not base64
+	return algorithmName[hashAlgorithm] + "=" + fmt.Sprintf("%x", sig)
 }
 
-func (auth *hmacAuth) SignatureFromHeader(req *http.Request) string {
+// SignatureFromHeader retrieves the signature included in the request header.
+func (auth *HmacAuth) SignatureFromHeader(req *http.Request) string {
 	return req.Header.Get(auth.header)
 }
 
@@ -207,23 +211,30 @@ func (result AuthenticationResult) String() string {
 	return validationResultStrings[result]
 }
 
-func (auth *hmacAuth) AuthenticateRequest(request *http.Request) (
+// AuthenticateRequest authenticates the request, returning the result code, the signature
+// from the header, and the locally-computed signature.
+func (auth *HmacAuth) AuthenticateRequest(request *http.Request) (
 	result AuthenticationResult, headerSignature,
 	computedSignature string) {
+	log := zapr.NewLogger(zap.L()).WithValues("UserAgent", request.UserAgent())
+
 	headerSignature = auth.SignatureFromHeader(request)
 	if headerSignature == "" {
+		log.Info("Invalid request; missing signature header", "header", auth.header, "headers", request.Header)
 		result = ResultNoSignature
 		return
 	}
 
-	components := strings.Split(headerSignature, " ")
+	components := strings.SplitN(headerSignature, SigSeparator, 2)
 	if len(components) != 2 {
+		log.Info("Invalid request; signature doesn't contain =", "signature", headerSignature)
 		result = ResultInvalidFormat
 		return
 	}
 
 	algorithm, err := DigestNameToCryptoHash(components[0])
 	if err != nil {
+		log.Info("Invalid request; unsupported algorithm", "algorithm", components[0])
 		result = ResultUnsupportedAlgorithm
 		return
 	}

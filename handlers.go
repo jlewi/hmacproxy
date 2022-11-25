@@ -1,95 +1,59 @@
 package main
 
 import (
-	"github.com/jlewi/hmacproxy/pkg/hmacauth"
-	"log"
+	"crypto/tls"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
+
+	"github.com/go-logr/zapr"
+	"github.com/jlewi/hmacproxy/pkg/hmacauth"
+	"go.uber.org/zap"
 )
 
 // NewHTTPProxyHandler returns a http.Handler and its description based on the
 // configuration specified in opts.
-func NewHTTPProxyHandler(opts *HmacProxyOpts) (
-	handler http.Handler, description string) {
+func NewHTTPProxyHandler(opts *HmacProxyOpts) (handler http.Handler, description string) {
+	log := zapr.NewLogger(zap.L())
+	bodyOnly := true
+	log.Info("Creating hmacauth", "digest", opts.Digest.ID, "header", opts.SignHeader, "headers", opts.Headers, "bodyOnly", bodyOnly)
 	auth := hmacauth.NewHmacAuth(opts.Digest.ID,
-		[]byte(opts.Secret), opts.SignHeader, opts.Headers)
+		[]byte(opts.Secret), opts.SignHeader, opts.Headers, true)
 
-	switch opts.Mode {
-	case HandlerAuthAndProxy:
-		return authAndProxyHandler(auth, &opts.Upstream)
-	}
-	log.Fatalf("unknown mode: %d\n", opts.Mode)
-	return
-}
-
-type signingHandler struct {
-	auth    hmacauth.HmacAuth
-	handler http.Handler
-}
-
-func (h signingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.auth.SignRequest(r)
-	h.handler.ServeHTTP(w, r)
-}
-
-func signAndProxyHandler(auth hmacauth.HmacAuth, upstream *HmacProxyURL) (
-	handler http.Handler, description string) {
-	description = "proxying signed requests to: " + upstream.Raw
-	proxy := httputil.NewSingleHostReverseProxy(upstream.URL)
-	handler = signingHandler{auth, proxy}
-	return
+	return authAndProxyHandler(auth, &opts.Upstream)
 }
 
 type authHandler struct {
-	auth    hmacauth.HmacAuth
+	auth    *hmacauth.HmacAuth
 	handler http.Handler
 }
 
 func (h authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	result, _, _ := h.auth.AuthenticateRequest(r)
+	log := zapr.NewLogger(zap.L())
 	// Add a health check.
 	if r.URL.Path == "/healthz" {
 		w.Write([]byte("ok"))
 		return
 	}
+	result, headerSignature, computedSignature := h.auth.AuthenticateRequest(r)
+
 	if result != hmacauth.ResultMatch {
+		log.Info("unauthorized request", "url", r.URL, "signature", headerSignature, "computedSignature", computedSignature)
 		http.Error(w, "unauthorized request", http.StatusUnauthorized)
 	} else {
 		h.handler.ServeHTTP(w, r)
 	}
 }
 
-func authAndProxyHandler(auth hmacauth.HmacAuth, upstream *HmacProxyURL) (
+func authAndProxyHandler(auth *hmacauth.HmacAuth, upstream *HmacProxyURL) (
 	handler http.Handler, description string) {
+	log := zapr.NewLogger(zap.L())
 	description = "proxying authenticated requests to: " + upstream.Raw
 	proxy := httputil.NewSingleHostReverseProxy(upstream.URL)
+	// Configure the proxy not to check https certificates.
+	log.Info("Proxy configured to skip TLS verification")
+	proxy.Transport = &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
 	handler = authHandler{auth, proxy}
-	return
-}
-
-type authOnlyHandler struct {
-	auth hmacauth.HmacAuth
-}
-
-func (h authOnlyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if origURI := r.Header.Get("X-Original-URI"); origURI != "" {
-		if origURL, err := url.ParseRequestURI(origURI); err == nil {
-			r.URL = origURL
-		}
-	}
-	result, _, _ := h.auth.AuthenticateRequest(r)
-
-	if result != hmacauth.ResultMatch {
-		http.Error(w, "unauthorized request", http.StatusUnauthorized)
-	} else {
-		w.WriteHeader(http.StatusAccepted)
-	}
-}
-
-func authenticationOnlyHandler(auth hmacauth.HmacAuth) (
-	handler http.Handler, description string) {
-	description = "responding Accepted/Unauthorized for auth queries"
-	handler = authOnlyHandler{auth}
 	return
 }

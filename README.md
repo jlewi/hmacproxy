@@ -1,5 +1,16 @@
 # hmacproxy HMAC authentication proxy server
 
+Originally forked from [18f/hmacauth](https://github.com/18F/hmacauth)
+
+This verifies requests have a valid hmac signature and if they do proxies them to the 
+appropriate server.
+
+This is intended for handling GitHub webhooks.
+
+##
+README below this line is outdated.
+
+## 
 Proxy server that signs and authenticates HTTP requests using an HMAC
 signature; uses the [github.com/18F/hmacauth Go package](https://github.com/18F/hmacauth).
 
@@ -49,71 +60,11 @@ Content-Type: text/plain; charset=utf-8
 Date: Mon, 05 Oct 2015 15:32:56 GMT
 ```
 
-## Signing outgoing requests
+##  Proxying to an upstream server
 
 ```sh
 $ hmacproxy -port 8080 -secret "foobar" -sign-header "X-Signature" \
   -upstream https://my-upstream.com/
-```
-
-## Validating incoming requests
-
-All of the following require the `-auth` flag.
-
-### Proxying to an upstream server
-
-```sh
-$ hmacproxy -port 8080 -secret "foobar" -sign-header "X-Signature" \
-  -upstream https://my-upstream.com/ -auth
-```
-
-### Serving files directly
-
-```sh
-$ hmacproxy -port 8080 -secret "foobar" -sign-header "X-Signature" \
-  -file-root /path/to/my/files -auth
-```
-
-### Returning an Accepted/Unauthorized status
-
-This should be compatible with the [Nginx
-`ngx_http_auth_request_module`](http://nginx.org/en/docs/http/ngx_http_auth_request_module.html)
-by using an `auth_request` directive to proxy to the `hmacproxy`.
-
-```sh
-$ hmacproxy -port 8080 -secret "foobar" -sign-header "X-Signature" -auth
-```
-
-Then add configuration such as the following to your nginx instance, where:
-
-- `PORT` is replaced with the port number of your service
-- `myservice.com` is replaced with the virtual server name for your service
-- `ssl/star.myservice.com.conf` contains the SSL configuration for your
-  server.
-- `http://127.0.0.1:8080` matches the address of the local `hmacproxy`
-  instance from above
-- The `X-Original-URI` header is added to the authentication request, defined
-  using [the builtin `$request_uri` nginx
-  variable](http://nginx.org/en/docs/http/ngx_http_core_module.html#var_request_uri).
-
-```
-server {
-  listen PORT ssl spdy;
-  server_name  myservice.com;
-
-  include ssl/star.myservice.com.conf;
-
-  location = /auth {
-    internal;
-    proxy_pass http://127.0.0.1:8080;
-    proxy_set_header X-Original-URI $request_uri;
-  }
-
-  location / {
-    auth_request /auth;
-    ...
-  }
-}
 ```
 
 ## Accepting incoming requests over SSL
