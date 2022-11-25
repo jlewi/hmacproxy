@@ -16,14 +16,8 @@ func NewHTTPProxyHandler(opts *HmacProxyOpts) (
 		[]byte(opts.Secret), opts.SignHeader, opts.Headers)
 
 	switch opts.Mode {
-	case HandlerSignAndProxy:
-		return signAndProxyHandler(auth, &opts.Upstream)
 	case HandlerAuthAndProxy:
 		return authAndProxyHandler(auth, &opts.Upstream)
-	case HandlerAuthForFiles:
-		return authForFilesHandler(auth, opts.FileRoot)
-	case HandlerAuthOnly:
-		return authenticationOnlyHandler(auth)
 	}
 	log.Fatalf("unknown mode: %d\n", opts.Mode)
 	return
@@ -54,6 +48,11 @@ type authHandler struct {
 
 func (h authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	result, _, _ := h.auth.AuthenticateRequest(r)
+	// Add a health check.
+	if r.URL.Path == "/healthz" {
+		w.Write([]byte("ok"))
+		return
+	}
 	if result != hmacauth.ResultMatch {
 		http.Error(w, "unauthorized request", http.StatusUnauthorized)
 	} else {
@@ -66,15 +65,6 @@ func authAndProxyHandler(auth hmacauth.HmacAuth, upstream *HmacProxyURL) (
 	description = "proxying authenticated requests to: " + upstream.Raw
 	proxy := httputil.NewSingleHostReverseProxy(upstream.URL)
 	handler = authHandler{auth, proxy}
-	return
-}
-
-func authForFilesHandler(auth hmacauth.HmacAuth, fileRoot string) (
-	handler http.Handler, description string) {
-	description = "serving files from " + fileRoot +
-		" for authenticated requests"
-	fileServer := http.FileServer(http.Dir(fileRoot))
-	handler = authHandler{auth, fileServer}
 	return
 }
 
