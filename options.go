@@ -20,7 +20,6 @@ type HmacProxyOpts struct {
 	SignHeader string
 	Headers    HmacProxyHeaders
 	Upstream   HmacProxyURL
-	FileRoot   string
 	SslCert    string
 	SslKey     string
 	Mode       HmacProxyMode
@@ -44,8 +43,6 @@ func RegisterCommandLineOptions(flags *flag.FlagSet) (opts *HmacProxyOpts) {
 		"Headers to factor into the signature, comma-separated")
 	flags.StringVar(&opts.Upstream.Raw, "upstream", "",
 		"Signed/authenticated requests are proxied to this server")
-	flags.StringVar(&opts.FileRoot, "file-root", "",
-		"Root of file system from which to serve documents")
 	flags.StringVar(&opts.SslCert, "ssl-cert", "",
 		"Path to the server's SSL certificate")
 	flags.StringVar(&opts.SslKey, "ssl-key", "",
@@ -63,7 +60,6 @@ func (opts *HmacProxyOpts) Validate() (err error) {
 	msgs = validatePort(opts, msgs)
 	msgs = validateAuthParams(opts, msgs)
 	msgs = validateUpstream(opts, msgs)
-	msgs = validateFileRoot(opts, msgs)
 	msgs = validateSsl(opts, msgs)
 
 	if len(msgs) != 0 {
@@ -114,8 +110,7 @@ const (
 
 func validateMode(opts *HmacProxyOpts, msgs []string) []string {
 	upstreamDefined := opts.Upstream.Raw != ""
-	fileRootDefined := opts.FileRoot != ""
-
+	fileRootDefined := false
 	if !(upstreamDefined || fileRootDefined || opts.Auth) {
 		msgs = append(msgs, "neither -upstream, -file-root, "+
 			"nor -auth specified")
@@ -215,14 +210,6 @@ func checkExistenceAndPermission(path, optionName, dirOrFile string,
 		msgs = append(msgs, optionName+" is not a regular file: "+path)
 	}
 	return msgs
-}
-
-func validateFileRoot(opts *HmacProxyOpts, msgs []string) []string {
-	if opts.FileRoot == "" {
-		return msgs
-	}
-	return checkExistenceAndPermission(
-		opts.FileRoot, "file-root", "dir", msgs)
 }
 
 func validateSsl(opts *HmacProxyOpts, msgs []string) []string {
