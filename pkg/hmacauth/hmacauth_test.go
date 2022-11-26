@@ -3,10 +3,8 @@ package hmacauth
 import (
 	"bufio"
 	"crypto"
-	"io"
 	"io/ioutil"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -50,7 +48,7 @@ func TestResultUnsupportedAlgorithmWillCauseNewHmacAuthToPanic(t *testing.T) {
 		assert.Equal(t, err,
 			"hmacauth: hash algorithm #0 is unavailable")
 	}()
-	NewHmacAuth(crypto.Hash(0), nil, "", nil)
+	NewHmacAuth(crypto.Hash(0), nil, "", nil, false)
 }
 
 func newTestRequest(request ...string) (req *http.Request) {
@@ -63,9 +61,9 @@ func newTestRequest(request ...string) (req *http.Request) {
 	}
 }
 
-func testHmacAuth() HmacAuth {
+func testHmacAuth() *HmacAuth {
 	return NewHmacAuth(
-		crypto.SHA1, []byte("foobar"), "GAP-Signature", HEADERS)
+		crypto.SHA1, []byte("foobar"), "GAP-Signature", HEADERS, false)
 }
 
 func TestRequestSignaturePost(t *testing.T) {
@@ -102,7 +100,7 @@ func TestRequestSignaturePost(t *testing.T) {
 		"/foo/bar",
 	}, "\n")+"\n")
 	assert.Equal(t, h.RequestSignature(req),
-		"sha1 K4IrVDtMCRwwW8Oms0VyZWMjXHI=")
+		"sha1"+SigSeparator+"2b822b543b4c091c305bc3a6b345726563235c72")
 
 	if requestBody, err := ioutil.ReadAll(req.Body); err != nil {
 		panic(err)
@@ -148,7 +146,7 @@ func TestRequestSignatureGetWithFullUrl(t *testing.T) {
 		"/foo/bar?baz=quux%2Fxyzzy#plugh",
 	}, "\n")+"\n")
 	assert.Equal(t, h.RequestSignature(req),
-		"sha1 ih5Jce9nsltry63rR4ImNz2hdnk=")
+		"sha1"+SigSeparator+"8a1e4971ef67b25b6bcbadeb478226373da17679")
 }
 
 func TestRequestSignatureGetWithMultipleHeadersWithTheSameName(t *testing.T) {
@@ -180,7 +178,7 @@ func TestRequestSignatureGetWithMultipleHeadersWithTheSameName(t *testing.T) {
 		"/foo/bar",
 	}, "\n")+"\n")
 	assert.Equal(t, h.RequestSignature(req),
-		"sha1 JlRkes1X+qq3Bgc/GcRyLos+4aI=")
+		"sha1"+SigSeparator+"2654647acd57faaab706073f19c4722e8b3ee1a2")
 }
 
 func TestAuthenticateRequestResultNoSignature(t *testing.T) {
@@ -207,8 +205,8 @@ func TestAuthenticateRequestResultUnsupportedAlgorithm(t *testing.T) {
 	h := testHmacAuth()
 	req := newGetRequest()
 	validSignature := h.RequestSignature(req)
-	components := strings.Split(validSignature, " ")
-	signatureWithResultUnsupportedAlgorithm := "unsupported " +
+	components := strings.Split(validSignature, SigSeparator)
+	signatureWithResultUnsupportedAlgorithm := "unsupported" + SigSeparator +
 		components[1]
 	req.Header.Set("GAP-Signature", signatureWithResultUnsupportedAlgorithm)
 	result, header, computed := h.AuthenticateRequest(req)
@@ -217,85 +215,41 @@ func TestAuthenticateRequestResultUnsupportedAlgorithm(t *testing.T) {
 	assert.Equal(t, computed, "")
 }
 
-func TestAuthenticateRequestResultMatch(t *testing.T) {
-	h := testHmacAuth()
-	req := newGetRequest()
+func TestAuthenticateRequestResultMatchGithub(t *testing.T) {
+	h := NewHmacAuth(
+		crypto.SHA256, []byte("This is a test secret."), "X-Hub-Signature-256", []string{}, true)
+	body := `{ "hello": "world!" }`
+	req := newTestRequest(
+		"POST /foo/bar HTTP/1.1",
+		"Content-Length: "+strconv.Itoa(len(body)),
+		"Content-MD5: deadbeef",
+		"Content-Type: application/json",
+		"Date: 2015-09-28",
+		"Authorization: trust me",
+		"X-Forwarded-User: mbland",
+		"X-Forwarded-Email: mbland@acm.org",
+		"X-Forwarded-Access-Token: feedbead",
+		"Cookie: foo; bar; baz=quux",
+		"X-Hub-Signature-256: sha256=3717251b8d639afd525320bf7eaf1f9edfa7b4415fde239d2c55c2b08bfc5699",
+		"",
+		body,
+	)
 	expected := h.RequestSignature(req)
-	h.SignRequest(req)
 	result, header, computed := h.AuthenticateRequest(req)
-	assert.Equal(t, result, ResultMatch)
 	assert.Equal(t, header, expected)
+	assert.Equal(t, result, ResultMatch)
 	assert.Equal(t, computed, expected)
 }
 
 func TestAuthenticateRequestMismatch(t *testing.T) {
 	foobarAuth := testHmacAuth()
 	barbazAuth := NewHmacAuth(
-		crypto.SHA1, []byte("barbaz"), "GAP-Signature", HEADERS)
+		crypto.SHA1, []byte("barbaz"), "GAP-Signature", HEADERS, false)
 	req := newGetRequest()
-	foobarAuth.SignRequest(req)
+	sig := foobarAuth.RequestSignature(req)
+	req.Header.Set("GAP-Signature", sig)
 	result, header, computed := barbazAuth.AuthenticateRequest(req)
 	assert.Equal(t, result, ResultMismatch)
 	assert.Equal(t, header, foobarAuth.RequestSignature(req))
 	assert.Equal(t, computed, barbazAuth.RequestSignature(req))
-}
-
-type SignatureAuthenticator struct {
-	auth HmacAuth
-}
-
-func (v *SignatureAuthenticator) Authenticate(
-	w http.ResponseWriter, r *http.Request) {
-	result, headerSig, computedSig := v.auth.AuthenticateRequest(r)
-	if result == ResultNoSignature {
-		w.Write([]byte("no signature received"))
-	} else if result == ResultMatch {
-		w.Write([]byte("signatures match"))
-	} else if result == ResultMismatch {
-		w.Write([]byte("signatures do not match:" +
-			"\n  received: " + headerSig +
-			"\n  computed: " + computedSig))
-	} else {
-		panic("Unknown result value: " + result.String())
-	}
-}
-
-// fakeNetConn simulates an http.Request.Body buffer that will be consumed
-// when it is read by the hmacauth.HmacAuth if not handled properly. See:
-//   https://github.com/18F/hmacauth/pull/4
-type fakeNetConn struct {
-	reqBody string
-}
-
-func (fnc *fakeNetConn) Read(p []byte) (n int, err error) {
-	if bodyLen := len(fnc.reqBody); bodyLen != 0 {
-		copy(p, fnc.reqBody)
-		fnc.reqBody = ""
-		return bodyLen, io.EOF
-	}
-	return 0, io.EOF
-}
-
-func TestSendAuthenticatedPostRequestToServer(t *testing.T) {
-	key := "foobar"
-	payload := `{ "hello": "world!" }`
-
-	auth := NewHmacAuth(crypto.SHA1, []byte(key), "X-Test-Signature", nil)
-	authenticator := &SignatureAuthenticator{auth: auth}
-	upstream := httptest.NewServer(
-		http.HandlerFunc(authenticator.Authenticate))
-
-	req, err := http.NewRequest("POST", upstream.URL+"/foo/bar",
-		ioutil.NopCloser(&fakeNetConn{reqBody: payload}))
-	if err != nil {
-		panic(err)
-	}
-	auth.SignRequest(req)
-	if response, err := http.DefaultClient.Do(req); err != nil {
-		panic(err)
-	} else {
-		assert.Equal(t, response.StatusCode, http.StatusOK)
-		responseBody, _ := ioutil.ReadAll(response.Body)
-		assert.Equal(t, "signatures match", string(responseBody))
-	}
 }

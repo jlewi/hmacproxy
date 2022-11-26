@@ -3,18 +3,17 @@ package main
 import (
 	"crypto"
 	"errors"
-	"flag"
-	"github.com/jlewi/hmacproxy/pkg/hmacauth"
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/jlewi/hmacproxy/pkg/hmacauth"
 )
 
 // HmacProxyOpts contains the parameters needed to determine which
 // authentication handler to launch and to configure it properly.
 type HmacProxyOpts struct {
 	Port       int
-	Auth       bool
 	Digest     HmacProxyDigest
 	Secret     string
 	SignHeader string
@@ -22,32 +21,6 @@ type HmacProxyOpts struct {
 	Upstream   HmacProxyURL
 	SslCert    string
 	SslKey     string
-	Mode       HmacProxyMode
-}
-
-// RegisterCommandLineOptions configures flags to fill in the fields of a new
-// HmacProxyOpts object based on command line options.
-func RegisterCommandLineOptions(flags *flag.FlagSet) (opts *HmacProxyOpts) {
-	opts = &HmacProxyOpts{}
-	flags.IntVar(&opts.Port, "port", 0,
-		"Port on which to listen for requests")
-	flags.BoolVar(&opts.Auth, "auth", false,
-		"Authenticate requests rather than signing them")
-	flags.StringVar(&opts.Digest.Name, "digest", "sha1",
-		"Hash algorithm to use when signing requests")
-	flags.StringVar(&opts.Secret, "secret", "",
-		"Secret key")
-	flags.StringVar(&opts.SignHeader, "sign-header", "",
-		"Header containing request signature")
-	flags.Var(&opts.Headers, "headers",
-		"Headers to factor into the signature, comma-separated")
-	flags.StringVar(&opts.Upstream.Raw, "upstream", "",
-		"Signed/authenticated requests are proxied to this server")
-	flags.StringVar(&opts.SslCert, "ssl-cert", "",
-		"Path to the server's SSL certificate")
-	flags.StringVar(&opts.SslKey, "ssl-key", "",
-		"Path to the key for -ssl-cert")
-	return
 }
 
 // Validate ensures that the HmacProxyOpts configuration is correct and parses
@@ -56,7 +29,6 @@ func RegisterCommandLineOptions(flags *flag.FlagSet) (opts *HmacProxyOpts) {
 // as possible and returns them as a single string via the err return value.
 func (opts *HmacProxyOpts) Validate() (err error) {
 	var msgs []string
-	msgs = validateMode(opts, msgs)
 	msgs = validatePort(opts, msgs)
 	msgs = validateAuthParams(opts, msgs)
 	msgs = validateUpstream(opts, msgs)
@@ -107,31 +79,6 @@ const (
 	// codes after authenticating a request (or not)
 	HandlerAuthOnly
 )
-
-func validateMode(opts *HmacProxyOpts, msgs []string) []string {
-	upstreamDefined := opts.Upstream.Raw != ""
-	fileRootDefined := false
-	if !(upstreamDefined || fileRootDefined || opts.Auth) {
-		msgs = append(msgs, "neither -upstream, -file-root, "+
-			"nor -auth specified")
-	} else if upstreamDefined && fileRootDefined {
-		msgs = append(msgs, "both -upstream and -file-root specified")
-	}
-	if fileRootDefined && !opts.Auth {
-		msgs = append(msgs, "-auth must be specified with -file-root")
-	}
-
-	if !opts.Auth {
-		opts.Mode = HandlerSignAndProxy
-	} else if upstreamDefined {
-		opts.Mode = HandlerAuthAndProxy
-	} else if fileRootDefined {
-		opts.Mode = HandlerAuthForFiles
-	} else {
-		opts.Mode = HandlerAuthOnly
-	}
-	return msgs
-}
 
 func validatePort(opts *HmacProxyOpts, msgs []string) []string {
 	if opts.Port <= 0 {
