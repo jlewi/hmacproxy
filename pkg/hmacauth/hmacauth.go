@@ -1,5 +1,11 @@
 package hmacauth
 
+// TODO(jeremy): This is a more general implementation of hmac then what GitHub requires; in particular
+// it supports including headers in the signature. It was inherited from the code I originally forked to create
+// the proxy server. We could potentially simplify the code and use
+// https://github.com/google/go-github/blob/18cd63d0e2bda56f9018d7f85bf11f81e6ce2dd2/github/messages.go to
+// validate the payload. That function is also used by palantir's github apps.
+
 import (
 	"bytes"
 	"crypto"

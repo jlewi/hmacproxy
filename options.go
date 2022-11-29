@@ -18,7 +18,7 @@ type HmacProxyOpts struct {
 	Secret     string
 	SignHeader string
 	Headers    HmacProxyHeaders
-	Upstream   HmacProxyURL
+	Mappings   Mappings
 	SslCert    string
 	SslKey     string
 }
@@ -31,7 +31,6 @@ func (opts *HmacProxyOpts) Validate() (err error) {
 	var msgs []string
 	msgs = validatePort(opts, msgs)
 	msgs = validateAuthParams(opts, msgs)
-	msgs = validateUpstream(opts, msgs)
 	msgs = validateSsl(opts, msgs)
 
 	if len(msgs) != 0 {
@@ -115,30 +114,6 @@ func validateAuthParams(opts *HmacProxyOpts, msgs []string) []string {
 type HmacProxyURL struct {
 	Raw string
 	URL *url.URL
-}
-
-func validateUpstream(opts *HmacProxyOpts, msgs []string) []string {
-	if opts.Upstream.Raw == "" {
-		return msgs
-	}
-
-	var err error
-	if opts.Upstream.URL, err = url.Parse(opts.Upstream.Raw); err != nil {
-		msgs = append(msgs, "upstream URL failed to parse"+err.Error())
-	}
-	scheme := opts.Upstream.URL.Scheme
-	if scheme == "" {
-		msgs = append(msgs, "upstream scheme not specified")
-	} else if !(scheme == "http" || scheme == "https") {
-		msgs = append(msgs, "invalid upstream scheme: "+scheme)
-	}
-	if host := opts.Upstream.URL.Host; host == "" {
-		msgs = append(msgs, "upstream host not specified")
-	}
-	if path := opts.Upstream.URL.RequestURI(); path != "/" {
-		msgs = append(msgs, "upstream path must be \"/\", not "+path)
-	}
-	return msgs
 }
 
 func checkExistenceAndPermission(path, optionName, dirOrFile string,
