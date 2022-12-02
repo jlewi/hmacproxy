@@ -1,84 +1,23 @@
 # hmacproxy HMAC authentication proxy server
 
-Originally forked from [18f/hmacauth](https://github.com/18F/hmacauth)
-
 This verifies requests have a valid hmac signature and if they do proxies them to the 
 appropriate server.
 
-This is intended for handling GitHub webhooks.
+This is intended for handling GitHub webhooks. The intention is to have a single loadbalancer
+that forwards all webhooks to the proxy which validates the request and then proxies them to the actual
+GitHub App. This approach gives us an extra layer of security which ensures we don't wholly rely on individual
+GitHub Apps authenticating the webhooks. Individual apps should still validate webhooks for added security.
 
-##
-README below this line is outdated.
+The proxy is configured with a YAML like the one below
 
-## 
-Proxy server that signs and authenticates HTTP requests using an HMAC
-signature; uses the [github.com/18F/hmacauth Go package](https://github.com/18F/hmacauth).
-
-[![Build Status](https://travis-ci.org/18F/hmacproxy.svg?branch=master)](https://travis-ci.org/18F/hmacproxy)
-
-[![Coverage Status](https://coveralls.io/repos/18F/hmacproxy/badge.svg?branch=master&service=github)](https://coveralls.io/github/18F/hmacproxy?branch=master)
-
-## Installation
-
-For now, install from source:
-
-```sh
-$ go get github.com/18F/hmacproxy
+```yaml
+routes:
+  - path: "/api/github/annotate/webhook"
+    upstream: "http://localhost:80/api/github/webhook"
 ```
 
-## Testing out locally
+A request must exactly match the path in order to be proxied to the target location.
 
-The following will authenticate local requests and return a status of 202 if
-everything works. Change the values for `-secret`, `-sign-header`, and
-`-headers` to simulate authentication failures.
+## References
 
-In the first shell:
-
-```sh
-$ hmacproxy -port 8081 -secret "foobar" -sign-header "X-Signature" -auth
-
-127.0.0.1:8081: responding Accepted/Unauthorized for auth queries
-```
-
-In the second shell:
-
-```sh
-$ hmacproxy -port 8080 -secret "foobar" -sign-header "X-Signature" \
-  -upstream http://localhost:8081/
-
-127.0.0.1:8080: proxying signed requests to: http://localhost:8081/
-```
-
-In the third shell:
-
-```sh
-$ curl -i localhost:8080/18F/hmacproxy
-
-HTTP/1.1 202 Accepted
-Content-Length: 0
-Content-Type: text/plain; charset=utf-8
-Date: Mon, 05 Oct 2015 15:32:56 GMT
-```
-
-##  Proxying to an upstream server
-
-```sh
-$ hmacproxy -port 8080 -secret "foobar" -sign-header "X-Signature" \
-  -upstream https://my-upstream.com/
-```
-
-## Accepting incoming requests over SSL
-
-If you wish to expose the proxy endpoints directly to the public, rather than
-via an Nginx proxy scheme, pass the `-ssl-cert` and `-ssl-key` options along
-all other `-auth` parameters.
-
-## Public domain
-
-This project is in the worldwide [public domain](LICENSE.md). As stated in [CONTRIBUTING](CONTRIBUTING.md):
-
-> This project is in the public domain within the United States, and copyright and related rights in the work worldwide are waived through the [CC0 1.0 Universal public domain dedication](https://creativecommons.org/publicdomain/zero/1.0/).
->
-> All contributions to this project will be released under the CC0
->dedication. By submitting a pull request, you are agreeing to comply
->with this waiver of copyright interest.
+Originally forked from [18f/hmacauth](https://github.com/18F/hmacauth)

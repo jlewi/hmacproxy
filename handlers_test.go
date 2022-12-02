@@ -7,23 +7,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/pkg/errors"
+
 	"github.com/jlewi/hmacproxy/pkg/hmacauth"
 	"github.com/jlewi/hydros/pkg/util"
 )
 
-func newHandler(opts *HmacProxyOpts) (handler http.Handler, description string) {
-
-	// The full command-line program requires that -port be greater than
-	// zero, but the test servers will pick ports dynamically. To avoid
-	// having useless -port arguments in the test, we'll add a fake
-	// argument here.
-	opts.Port = 1
-	if err := opts.Validate(); err != nil {
-		panic("error parsing options: " + err.Error())
-	}
-	return NewHTTPProxyHandler(opts)
-}
-
+// proxiedServer performs the role of the upstream server that requests are proxied to
 type proxiedServer struct {
 	http.Handler
 }
@@ -32,9 +22,20 @@ func (ps proxiedServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("Success!"))
 }
 
-func newServer(opts *HmacProxyOpts) (*httptest.Server, string) {
-	handler, desc := newHandler(opts)
-	return httptest.NewServer(handler), desc
+func newServer(opts *HmacProxyOpts) (*httptest.Server, error) {
+	// The full command-line program requires that -port be greater than
+	// zero, but the test servers will pick ports dynamically. To avoid
+	// having useless -port arguments in the test, we'll add a fake
+	// argument here.
+	opts.Port = 1
+	if err := opts.Validate(); err != nil {
+		return nil, err
+	}
+	handler, err := NewHTTPProxyHandler(opts)
+	if err != nil {
+		return nil, errors.Wrapf(err, "Failed to create handler")
+	}
+	return httptest.NewServer(handler), nil
 }
 
 func Test_proxy(t *testing.T) {
@@ -42,6 +43,7 @@ func Test_proxy(t *testing.T) {
 		name string
 		code int
 		body string
+		path string
 	}
 
 	cases := []testCase{
@@ -49,11 +51,19 @@ func Test_proxy(t *testing.T) {
 			name: "basic",
 			code: http.StatusOK,
 			body: "Success!",
+			path: "/api/github/webhook",
+		},
+		{
+			name: "notfound",
+			code: http.StatusNotFound,
+			body: "404 page not found\n",
+			path: "/api/github/webhook/extra",
 		},
 		{
 			name: "invalid-sig",
 			code: http.StatusUnauthorized,
 			body: "unauthorized request\n",
+			path: "/api/github/webhook",
 		},
 	}
 
@@ -61,36 +71,44 @@ func Test_proxy(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			proxied := httptest.NewServer(proxiedServer{})
+			upstream := httptest.NewServer(proxiedServer{})
 			opts := &HmacProxyOpts{
 				Port:       0,
 				Digest:     HmacProxyDigest{Name: "sha256"},
 				Secret:     "foobar",
 				SignHeader: "Test-Signature",
 				Headers:    []string{},
-				Upstream: HmacProxyURL{
-					Raw: proxied.URL,
-					URL: nil,
-				},
+				Mappings: Mappings{Routes: []Route{
+					{
+						Path:     "/api/github/webhook",
+						Upstream: upstream.URL + "/api/github/webhook",
+					},
+				}},
 
 				SslCert: "",
 				SslKey:  "",
 			}
-			upstream, _ := newServer(opts)
+			proxy, err := newServer(opts)
+			if err != nil {
+				t.Fatalf("Failed to create proxy server; error %v", err)
+			}
 
+			// Now issue a request
 			reqBody := "somepayload"
 			buff := bytes.NewBuffer([]byte(reqBody))
-			req, err := http.NewRequest(http.MethodPost, upstream.URL, buff)
+			req, err := http.NewRequest(http.MethodPost, proxy.URL+c.path, buff)
 			if err != nil {
 				t.Fatalf("Error %v", err)
 			}
 
 			hmac := hmacauth.NewHmacAuth(opts.Digest.ID, []byte(opts.Secret), opts.SignHeader, opts.Headers, true)
-			if c.code == http.StatusOK {
+
+			// Set a valid signature for any test case that doesn't fail with an authorization error.
+			if c.code == http.StatusUnauthorized {
+				req.Header.Set("Test-Signature", "badsignature")
+			} else {
 				sig := hmac.RequestSignature(req)
 				req.Header.Set("Test-Signature", sig)
-			} else {
-				req.Header.Set("Test-Signature", "badsignature")
 			}
 
 			response, err := http.DefaultClient.Do(req)

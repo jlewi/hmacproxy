@@ -1,0 +1,4 @@
+# Example of a mappings file
+routes:
+  - path: "/api/github/annotate/webhook"
+    upstream: "http://localhost:80/webhook/"

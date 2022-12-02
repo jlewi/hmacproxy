@@ -7,6 +7,8 @@ import (
 	"os"
 	"strconv"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/go-logr/zapr"
 	"github.com/jlewi/hmacproxy/pkg/hmacauth"
 	"github.com/jlewi/hydros/pkg/util"
@@ -23,6 +25,7 @@ const (
 func newRootCmd() *cobra.Command {
 	var level string
 	var jsonLog bool
+	var file string
 	opts := &HmacProxyOpts{
 		// This is the algorithm used by github
 		// TODO(jeremu): I don't think we can get rid of this. Its only used by the code paths that sign requests
@@ -46,11 +49,25 @@ func newRootCmd() *cobra.Command {
 				}
 
 				address := ":" + strconv.Itoa(opts.Port)
-				handler, description := NewHTTPProxyHandler(opts)
-				server := &http.Server{Addr: address, Handler: handler}
-				log.Info("starting hmacproxy server", "address", address, "description", description)
 
-				var err error
+				f, err := os.Open(file)
+				if err != nil {
+					return errors.Wrapf(err, "Could not open mappings file %v", file)
+				}
+
+				d := yaml.NewDecoder(f)
+
+				if err := d.Decode(&opts.Mappings); err != nil {
+					return errors.Wrapf(err, "Could not decode Mappings object from file %v", file)
+				}
+
+				handler, err := NewHTTPProxyHandler(opts)
+				if err != nil {
+					return err
+				}
+				server := &http.Server{Addr: address, Handler: handler}
+				log.Info("starting hmacproxy server", "address", address)
+
 				if opts.SslCert != "" {
 					err = server.ListenAndServeTLS(opts.SslCert, opts.SslKey)
 				} else {
@@ -59,7 +76,8 @@ func newRootCmd() *cobra.Command {
 				return err
 			}()
 			if err != nil {
-				fmt.Printf("hmacproxy failed with error: %v", err)
+				fmt.Printf("hmacproxy failed with error: %+v", err)
+				os.Exit(1)
 			}
 		},
 	}
@@ -71,12 +89,12 @@ func newRootCmd() *cobra.Command {
 	rootCmd.Flags().StringVarP(&opts.Secret, "secret", "", "", "Secret key")
 	rootCmd.Flags().StringVarP(&opts.SignHeader, "sign-header", "", GitHubHeader, "Header containing request signature")
 
-	rootCmd.Flags().StringVarP(&opts.Upstream.Raw, "upstream", "", "", "Signed/authenticated requests are proxied to this server")
+	rootCmd.Flags().StringVarP(&file, "mappings", "m", "", "YAML file containing the Mappings listing the proxied paths")
 	rootCmd.Flags().StringVar(&opts.SslCert, "ssl-cert", "", "Path to the server's SSL certificate")
 	rootCmd.Flags().StringVar(&opts.SslKey, "ssl-key", "", "Path to the key for -ssl-cert")
 
 	rootCmd.MarkFlagRequired("secret")
-	rootCmd.MarkFlagRequired("upstream")
+	rootCmd.MarkFlagRequired("mappings")
 
 	return rootCmd
 }
