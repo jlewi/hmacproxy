@@ -3,9 +3,12 @@ package main
 import (
 	"crypto"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
+
+	"github.com/jlewi/hydros/pkg/files"
 
 	"gopkg.in/yaml.v3"
 
@@ -21,6 +24,25 @@ import (
 const (
 	GitHubHeader = "X-Hub-Signature-256"
 )
+
+func readSecret(secret string) ([]byte, error) {
+	f := &files.Factory{}
+	h, err := f.Get(secret)
+	if err != nil {
+		return nil, err
+	}
+	r, err := h.NewReader(secret)
+	if err != nil {
+		return nil, err
+	}
+	return io.ReadAll(r)
+}
+
+func panicOnError(err error) {
+	if err != nil {
+		panic(err.Error())
+	}
+}
 
 func newRootCmd() *cobra.Command {
 	var level string
@@ -86,6 +108,7 @@ func newRootCmd() *cobra.Command {
 	rootCmd.PersistentFlags().BoolVarP(&jsonLog, "json-logs", "", true, "Enable json logging.")
 
 	rootCmd.Flags().IntVarP(&opts.Port, "port", "", 0, "Port on which to listen for requests")
+	// TODO(jeremy): Support using readSecret to load from a file/gcpSecretManager
 	rootCmd.Flags().StringVarP(&opts.Secret, "secret", "", "", "Secret key")
 	rootCmd.Flags().StringVarP(&opts.SignHeader, "sign-header", "", GitHubHeader, "Header containing request signature")
 
@@ -93,18 +116,14 @@ func newRootCmd() *cobra.Command {
 	rootCmd.Flags().StringVar(&opts.SslCert, "ssl-cert", "", "Path to the server's SSL certificate")
 	rootCmd.Flags().StringVar(&opts.SslKey, "ssl-key", "", "Path to the key for -ssl-cert")
 
-	rootCmd.MarkFlagRequired("secret")
-	rootCmd.MarkFlagRequired("mappings")
+	panicOnError(rootCmd.MarkFlagRequired("secret"))
+	panicOnError(rootCmd.MarkFlagRequired("mappings"))
 
 	return rootCmd
 }
 
 func newComputeHMAC() *cobra.Command {
 	opts := &HmacProxyOpts{
-		// Always set Auth to true; signing requests is no longer supported
-		// This is the algorithm used by github
-		// TODO(jeremu): I don't think we can get rid of this. Its only used by the code paths that sign requests
-		// and we want to remove that functionality from the proxy.
 		Digest: HmacProxyDigest{
 			Name: "sha256",
 			ID:   crypto.SHA256,
@@ -145,14 +164,87 @@ func newComputeHMAC() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&opts.Secret, "secret", "", "", "Secret key")
-	cmd.Flags().StringVar(&file, "file", "f", "The file containing the payload to comput the signature off")
+	cmd.Flags().StringVar(&file, "file", "f", "The file containing the payload to compute the signature off")
 
+	return cmd
+}
+
+func newCurl() *cobra.Command {
+	opts := &HmacProxyOpts{
+		Digest: HmacProxyDigest{
+			Name: "sha256",
+			ID:   crypto.SHA256,
+		},
+		Port: 8080,
+
+		SignHeader: GitHubHeader,
+	}
+	var file string
+	var header string
+	var url string
+	cmd := &cobra.Command{
+		Use:   "curl",
+		Short: "Curl the specified endpoint using the specified signature.",
+		Run: func(cmd *cobra.Command, args []string) {
+
+			err := func() error {
+				if err := opts.Validate(); err != nil {
+					return err
+				}
+
+				secret, err := readSecret(opts.Secret)
+				if err != nil {
+					return err
+				}
+				auth := hmacauth.NewHmacAuth(opts.Digest.ID, secret, GitHubHeader, nil, true)
+				var buff io.Reader
+
+				if file != "" {
+					f, err := os.Open(file)
+					if err != nil {
+						return errors.Wrapf(err, "could not read path %v", file)
+					}
+					buff = f
+				}
+
+				req, err := http.NewRequest("POST", url, buff)
+				if err != nil {
+					return err
+				}
+				auth.SignRequest(req)
+
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Response code: %v\n", resp.StatusCode)
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Response body:\n%v", string(body))
+				return err
+			}()
+			if err != nil {
+				fmt.Printf("curl %v failed with error: %v", url, err)
+			}
+		},
+	}
+
+	cmd.Flags().StringVarP(&header, "header", "", GitHubHeader, "Header to add the signature to")
+	cmd.Flags().StringVarP(&opts.Secret, "secret-file", "", "", "Secret key file; can be posix file or gcpSecretManager:///path/to/key")
+	cmd.Flags().StringVarP(&file, "file", "f", "", "(Optional) The file containing the payload of the request")
+	cmd.Flags().StringVarP(&url, "url", "u", "", "Curl to fetch")
+
+	panicOnError(cmd.MarkFlagRequired("secret-file"))
+	panicOnError(cmd.MarkFlagRequired("url"))
 	return cmd
 }
 
 func main() {
 	rootCmd := newRootCmd()
 	rootCmd.AddCommand(newComputeHMAC())
+	rootCmd.AddCommand(newCurl())
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Printf("Command failed with error: %+v", err)
 		os.Exit(1)
