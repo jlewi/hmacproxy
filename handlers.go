@@ -89,7 +89,9 @@ func (h ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log := zapr.NewLogger(zap.L())
 	// Add a health check.
 	if r.URL.Path == healthPath {
-		w.Write([]byte("ok"))
+		if _, err := w.Write([]byte("ok")); err != nil {
+			log.Error(err, "Failed to write response")
+		}
 		return
 	}
 	result, headerSignature, computedSignature := h.auth.AuthenticateRequest(r)

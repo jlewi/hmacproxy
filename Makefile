@@ -2,7 +2,7 @@ build-dir:
 	mkdir -p .build
 
 build-go: build-dir
-	CGO_ENABLED=0 go build -o .build/hydros github.com/jlewi/hmacproxy
+	CGO_ENABLED=0 go build -o .build/hmacproxy github.com/jlewi/hmacproxy
 
 tidy-go:
 	gofmt -s -w .

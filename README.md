@@ -18,6 +18,13 @@ routes:
 
 A request must exactly match the path in order to be proxied to the target location.
 
+## Curl Support
+
+CLI supports issuing a signed request which is useful for testing/development.
+
+```
+curl --secret-file="gcpSecretManager:///projects/yourproject/secrets/github-webhook/versions/latest" --url=https://webhooks.yourdomain.dev/path
+```
 ## References
 
 Originally forked from [18f/hmacauth](https://github.com/18F/hmacauth)

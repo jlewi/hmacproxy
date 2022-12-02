@@ -112,7 +112,8 @@ func Test_proxy(t *testing.T) {
 			}
 
 			response, err := http.DefaultClient.Do(req)
-			defer response.Body.Close()
+			defer util.DeferIgnoreError(response.Body.Close)
+
 			if err != nil {
 				t.Fatalf("Get failed: %v", err)
 			}

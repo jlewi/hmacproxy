@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strconv"
 	"strings"
@@ -51,7 +50,7 @@ func init() {
 		// Note that both sides of the client/server connection must
 		// have an algorithm available in order to successfully
 		// authenticate using that algorithm
-		if algorithm.Available() == false {
+		if !algorithm.Available() {
 			delete(supportedAlgorithms, name)
 		}
 	}
@@ -91,7 +90,7 @@ type HmacAuth struct {
 // NewHmacAuth returns an HmacAuth object that can be used to sign or
 // authenticate HTTP requests based on the supplied parameters.
 func NewHmacAuth(hash crypto.Hash, key []byte, header string, headers []string, bodyOnly bool) *HmacAuth {
-	if hash.Available() == false {
+	if !hash.Available() {
 		var name string
 		var supported bool
 		if name, supported = algorithmName[hash]; !supported {
@@ -160,7 +159,7 @@ func requestSignature(auth *HmacAuth, req *http.Request,
 	if req.Body != nil {
 		reqBody, _ := io.ReadAll(req.Body)
 		log.V(util.Debug).Info("Computing body hmac", "length", len(reqBody), "body", string(reqBody))
-		req.Body = ioutil.NopCloser(bytes.NewBuffer(reqBody))
+		req.Body = io.NopCloser(bytes.NewBuffer(reqBody))
 		b, err := h.Write(reqBody)
 		if err != nil {
 			log.Error(err, "Failed to write bytes to hmac")
@@ -252,4 +251,8 @@ func (auth *HmacAuth) AuthenticateRequest(request *http.Request) (
 		result = ResultMismatch
 	}
 	return
+}
+
+func (auth *HmacAuth) SignRequest(req *http.Request) {
+	req.Header.Set(auth.header, auth.RequestSignature(req))
 }
