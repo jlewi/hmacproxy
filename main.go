@@ -3,6 +3,7 @@ package main
 import (
 	"crypto"
 	"fmt"
+	"github.com/jlewi/hmacproxy/pkg"
 	"io"
 	"net/http"
 	"os"
@@ -48,11 +49,11 @@ func newRootCmd() *cobra.Command {
 	var level string
 	var jsonLog bool
 	var file string
-	opts := &HmacProxyOpts{
+	opts := &pkg.HmacProxyOpts{
 		// This is the algorithm used by github
 		// TODO(jeremu): I don't think we can get rid of this. Its only used by the code paths that sign requests
 		// and we want to remove that functionality from the proxy.
-		Digest: HmacProxyDigest{
+		Digest: pkg.HmacProxyDigest{
 			Name: "sha256",
 			ID:   crypto.SHA256,
 		},
@@ -83,7 +84,7 @@ func newRootCmd() *cobra.Command {
 					return errors.Wrapf(err, "Could not decode Mappings object from file %v", file)
 				}
 
-				handler, err := NewHTTPProxyHandler(opts)
+				handler, err := pkg.NewHTTPProxyHandler(opts)
 				if err != nil {
 					return err
 				}
@@ -123,8 +124,8 @@ func newRootCmd() *cobra.Command {
 }
 
 func newComputeHMAC() *cobra.Command {
-	opts := &HmacProxyOpts{
-		Digest: HmacProxyDigest{
+	opts := &pkg.HmacProxyOpts{
+		Digest: pkg.HmacProxyDigest{
 			Name: "sha256",
 			ID:   crypto.SHA256,
 		},
@@ -170,8 +171,8 @@ func newComputeHMAC() *cobra.Command {
 }
 
 func newCurl() *cobra.Command {
-	opts := &HmacProxyOpts{
-		Digest: HmacProxyDigest{
+	opts := &pkg.HmacProxyOpts{
+		Digest: pkg.HmacProxyDigest{
 			Name: "sha256",
 			ID:   crypto.SHA256,
 		},
